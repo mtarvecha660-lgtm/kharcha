@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="KharchaTheme" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:colorPrimary">#C8553D</item>
+        <item name="android:colorPrimaryDark">#FBF6EF</item>
+        <item name="android:colorAccent">#C8553D</item>
+        <item name="android:windowBackground">#FBF6EF</item>
+        <item name="android:statusBarColor">#FBF6EF</item>
+        <item name="android:navigationBarColor">#FBF6EF</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:textColorPrimary">#2B2420</item>
+    </style>
+    <color name="ic_bg">#C8553D</color>
+</resources>

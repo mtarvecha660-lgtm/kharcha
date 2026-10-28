@@ -1,0 +1,19 @@
+# Gradle / Android build output
+build/
+.gradle/
+.kotlin/
+local.properties
+*.log
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Signing — never commit keys or passwords
+*.jks
+*.keystore
+keystore.properties
+
+# IDE
+.idea/
+*.iml
+.DS_Store
