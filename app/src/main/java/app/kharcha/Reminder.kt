@@ -62,8 +62,9 @@ object Reminder {
         val db = Db.get(ctx)
         val dayStart = startOfDay()
         val untagged = db.untaggedSince(dayStart)
-        val today = db.between(dayStart, dayStart + 86400000L).filter { it.counts }
-        val total = today.sumOf { it.amountPaise }
+        val todayAll = db.between(dayStart, dayStart + 86400000L)
+        val total = db.spent(todayAll) // split payments count by their parts
+        val today = todayAll.filter { !it.reversed }
         val (title, text, target) = if (untagged.isNotEmpty()) {
             val n = untagged.size
             Triple(

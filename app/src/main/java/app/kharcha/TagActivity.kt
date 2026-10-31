@@ -10,7 +10,6 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import app.kharcha.core.Categorizer
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -24,6 +23,7 @@ class TagActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         db = Db.get(this)
+        CatStore.reload(db)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(C.BG) }
         root.addView(label("What were these?", 26f, C.INK, true).apply { setPadding(dp(20), dp(24), dp(20), dp(2)) })
         root.addView(label("Tap a category. I'll remember the payee next time.", 14f, C.MUTED).apply { setPadding(dp(20), 0, dp(20), dp(10)) })
@@ -62,7 +62,7 @@ class TagActivity : Activity() {
 
         val status = label("", 13f, C.ACCENT, true)
         val flow = FlowLayout(this@TagActivity, dp(8), dp(8))
-        for (cat in Categorizer.CHIPS) {
+        for (cat in CatStore.spending().map { it.name }) {
             flow.addView(chip(catLabel(cat)) {
                 db.setCategory(t, cat)
                 notes[t.id]?.let { db.setNote(t.id, it) }

@@ -27,7 +27,27 @@ object C {
         "Health" to 0xFF5AA39A.toInt(), "Study" to 0xFF6B7FB8.toInt(), "People" to 0xFFB98B5E.toInt(),
         "Other" to 0xFF9A9087.toInt(), "Untagged" to 0xFFCFC4B8.toInt(),
     )
-    fun cat(c: String?) = CAT[c ?: "Untagged"] ?: 0xFF9A9087.toInt()
+    fun cat(c: String?) = if (c == null) CAT.getValue("Untagged") else (CatStore.byName(c)?.color ?: CAT[c] ?: 0xFF9A9087.toInt())
+
+    /** Colours offered when adding or editing a category: the original set plus a few more in the same muted family. */
+    val PALETTE = listOf(
+        0xFFE07A4F, 0xFFC8553D, 0xFFD9A441, 0xFF8DA65A, 0xFF5AA39A, 0xFF4F86A8,
+        0xFF6B7FB8, 0xFF8C6BB1, 0xFFB5658F, 0xFFB98B5E, 0xFF9A9087, 0xFF5E6B73,
+    ).map { it.toInt() }
+}
+
+/** In-memory copy of the user's categories (order, emoji, colour), refreshed after every edit. */
+object CatStore {
+    @Volatile private var list: List<Category> = emptyList()
+    @Volatile private var map: Map<String, Category> = emptyMap()
+    fun reload(db: Db) { list = db.categories(); map = list.associateBy { it.name } }
+    fun ensure(db: Db) { if (list.isEmpty()) reload(db) }
+    fun byName(n: String): Category? = map[n]
+    /** Every category, spending ones first in the user's order, then ATM cash / Not spending. */
+    fun all(): List<Category> = list
+    /** Categories for picking what a spend was (no ATM cash / Not spending). */
+    fun spending(): List<Category> = list.filter { it.counts }
+    fun names(): List<String> = list.map { it.name }
 }
 
 fun Context.dp(v: Int): Int = (v * resources.displayMetrics.density + 0.5f).toInt()
@@ -85,7 +105,7 @@ fun rupees(paise: Long): String {
 }
 
 fun catLabel(c: String?): String =
-    if (c == null) "Untagged" else (app.kharcha.core.Categorizer.EMOJI[c]?.let { "$it " } ?: "") + c
+    if (c == null) "Untagged" else (CatStore.byName(c)?.label ?: ((app.kharcha.core.Categorizer.EMOJI[c]?.let { "$it " } ?: "") + c))
 
 /** Simple wrapping row for chips. */
 class FlowLayout(ctx: Context, private val hGap: Int, private val vGap: Int) : ViewGroup(ctx) {

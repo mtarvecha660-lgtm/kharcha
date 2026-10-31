@@ -28,6 +28,12 @@
         <activity android:name=".TagActivity" android:exported="false"
             android:windowSoftInputMode="adjustResize" />
 
+        <activity android:name=".SplitActivity" android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity android:name=".CategoriesActivity" android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+
         <receiver android:name=".SmsReceiver" android:exported="true"
             android:permission="android.permission.BROADCAST_SMS">
             <intent-filter android:priority="999">

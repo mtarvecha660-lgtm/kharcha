@@ -21,7 +21,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
-import app.kharcha.core.Categorizer
+import app.kharcha.core.SplitMath
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -34,10 +34,12 @@ class MainActivity : Activity() {
     private var importing = false
     private var smsDenied = false
     private val prefs by lazy { getSharedPreferences("k", MODE_PRIVATE) }
+    private val expanded = HashSet<Long>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         db = Db.get(this)
+        CatStore.reload(db)
         val root = FrameLayout(this).apply { setBackgroundColor(C.BG) }
         content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dp(8), 0, dp(96)) }
         root.addView(ScrollView(this).apply { addView(content) })
@@ -57,6 +59,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         if (hasSms() && !prefs.getBoolean("imported", false) && !importing) runImport()
+        CatStore.reload(db)
         render()
     }
 
@@ -120,9 +123,16 @@ class MainActivity : Activity() {
             setOnClickListener { startActivity(Intent(this@MainActivity, TagActivity::class.java)) }
         })
 
-        val totals = (0..2).map { p -> db.between(rangeStart(p), farFuture).filter { it.counts }.sumOf { it.amountPaise } }
+        // Split payments count by their parts, so each part lands in its own category.
+        val totals = (0..2).map { p -> db.spent(db.between(rangeStart(p), farFuture)) }
         val txns = db.between(rangeStart(period), farFuture)
-        val counted = txns.filter { it.counts }
+        val splits = db.splitsFor(txns.map { it.id })
+        val excluded = db.excludedNames()
+        val itemsByTxn = txns.associate { t ->
+            t.id to SplitMath.items(t.category, t.amountPaise, t.reversed, splits[t.id]?.map { it.toPart() } ?: emptyList(), excluded)
+        }
+        val counted = txns.filter { itemsByTxn[it.id]?.isNotEmpty() == true }
+        val items = itemsByTxn.values.flatten()
 
         content.addView(card().apply {
             val chips = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL }
@@ -135,8 +145,8 @@ class MainActivity : Activity() {
                 "   ·   today ${rupees(totals[0])}  ·  week ${rupees(totals[1])}  ·  month ${rupees(totals[2])}", 12f, C.MUTED))
         })
 
-        if (counted.isNotEmpty()) content.addView(barsCard(counted))
-        content.addView(listCard(txns))
+        if (items.isNotEmpty()) content.addView(barsCard(items))
+        content.addView(listCard(txns, splits, itemsByTxn))
     }
 
     private fun permissionCard() = card().apply {
@@ -153,12 +163,11 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun barsCard(counted: List<Txn>) = card().apply {
+    private fun barsCard(items: List<app.kharcha.core.Item>) = card().apply {
         addView(label("Where it went", 16f, C.INK, true).apply { setPadding(0, 0, 0, dp(10)) })
-        val byCat = counted.groupBy { it.category ?: "Untagged" }.mapValues { e -> e.value.sumOf { it.amountPaise } }
-            .entries.sortedByDescending { it.value }
-        val max = byCat.maxOf { it.value }.coerceAtLeast(1)
-        val total = byCat.sumOf { it.value }.coerceAtLeast(1)
+        val byCat = SplitMath.byCategory(items).map { (it.first ?: "Untagged") to it.second }
+        val max = byCat.maxOf { it.second }.coerceAtLeast(1)
+        val total = byCat.sumOf { it.second }.coerceAtLeast(1)
         for ((cat, sum) in byCat) {
             val row = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(4), 0, dp(4)) }
             row.addView(label(catLabel(if (cat == "Untagged") null else cat), 13f, C.INK).apply { maxLines = 1 }, lp(dp(112), WRAP))
@@ -172,7 +181,7 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun listCard(txns: List<Txn>) = card().apply {
+    private fun listCard(txns: List<Txn>, splits: Map<Long, List<SplitPart>>, itemsByTxn: Map<Long, List<app.kharcha.core.Item>>) = card().apply {
         addView(label(if (period == 0) "Today" else "Payments", 16f, C.INK, true).apply { setPadding(0, 0, 0, dp(4)) })
         if (txns.isEmpty()) {
             addView(label(if (hasSms()) "No spends yet. New bank SMS show up here automatically." else "Allow SMS access above, or add a cash spend.", 14f, C.MUTED).apply { setPadding(0, dp(8), 0, dp(8)) })
@@ -186,11 +195,13 @@ class MainActivity : Activity() {
             if (period != 0 && d != lastDay) {
                 addView(label(d, 12f, C.MUTED, true).apply { setPadding(0, dp(12), 0, dp(2)) }); lastDay = d
             }
-            addView(txnRow(t, timeFmt))
+            val parts = splits[t.id]
+            if (parts.isNullOrEmpty()) addView(txnRow(t, timeFmt, itemsByTxn[t.id]?.isNotEmpty() == true))
+            else addView(splitRow(t, parts, timeFmt, itemsByTxn[t.id]?.isNotEmpty() == true))
         }
     }
 
-    private fun txnRow(t: Txn, timeFmt: SimpleDateFormat): LinearLayout = LinearLayout(this).apply {
+    private fun txnRow(t: Txn, timeFmt: SimpleDateFormat, counts: Boolean = t.counts): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(10), 0, dp(10))
         addView(View(this@MainActivity).apply { background = rounded(C.cat(t.category), dp(5).toFloat()) }, lp(dp(10), dp(10)).apply { rightMargin = dp(12) })
         val mid = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
@@ -199,10 +210,50 @@ class MainActivity : Activity() {
             (t.bank?.let { " · $it" } ?: if (t.source == "manual") " · cash" else "") + (t.note?.let { " · $it" } ?: "")
         mid.addView(label(sub, 12f, if (t.category == null) C.ACCENT else C.MUTED).apply { maxLines = 1 })
         addView(mid, lp(0, WRAP, 1f))
-        addView(label(rupees(t.amountPaise), 16f, if (t.counts) C.INK else C.MUTED, true).apply {
+        addView(label(rupees(t.amountPaise), 16f, if (counts) C.INK else C.MUTED, true).apply {
             if (t.reversed) paintFlags = paintFlags or Paint.STRIKE_THRU_TEXT_FLAG
         })
         setOnClickListener { showEdit(t) }
+    }
+
+    /** A split payment: the parent row, a "split into N" chip, and its parts when expanded. */
+    private fun splitRow(t: Txn, parts: List<SplitPart>, timeFmt: SimpleDateFormat, counts: Boolean): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        val open = t.id in expanded
+        val top = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(10), 0, dp(4)) }
+        // Dot = a tiny stack of the parts' colours.
+        val dots = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
+        parts.take(3).forEach { p -> dots.addView(View(this@MainActivity).apply { background = rounded(C.cat(p.category), dp(2).toFloat()) }, lp(dp(10), dp(4)).apply { bottomMargin = dp(1) }) }
+        top.addView(dots, lp(dp(10), WRAP).apply { rightMargin = dp(12) })
+        val mid = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
+        mid.addView(label(t.title, 15f, C.INK, true).apply { maxLines = 1 })
+        mid.addView(label(timeFmt.format(Date(t.ts)) + (t.bank?.let { " · $it" } ?: if (t.source == "manual") " · cash" else "") +
+            (t.note?.let { " · $it" } ?: ""), 12f, C.MUTED).apply { maxLines = 1 })
+        top.addView(mid, lp(0, WRAP, 1f))
+        top.addView(label(rupees(t.amountPaise), 16f, if (counts) C.INK else C.MUTED, true).apply {
+            if (t.reversed) paintFlags = paintFlags or Paint.STRIKE_THRU_TEXT_FLAG
+        })
+        top.setOnClickListener { showEdit(t) }
+        addView(top)
+        val chipRow = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL; setPadding(dp(22), 0, 0, dp(if (open) 2 else 10)) }
+        chipRow.addView(TextView(this@MainActivity).apply {
+            text = "✂ split into ${parts.size}  " + if (open) "▴" else "▾"; textSize = 12f; setTextColor(C.ACCENT)
+            background = rounded(C.ACCENT_SOFT, dp(14).toFloat()); setPadding(dp(10), dp(4), dp(10), dp(4))
+            setOnClickListener { if (open) expanded.remove(t.id) else expanded.add(t.id); render() }
+        })
+        addView(chipRow)
+        if (open) for (p in parts) addView(LinearLayout(this@MainActivity).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(22), dp(7), 0, dp(7))
+            addView(View(this@MainActivity).apply { background = rounded(C.cat(p.category), dp(4).toFloat()) }, lp(dp(8), dp(8)).apply { rightMargin = dp(10) })
+            addView(label(catLabel(p.category) + (p.note?.let { " · $it" } ?: ""), 14f, C.INK).apply { maxLines = 1 }, lp(0, WRAP, 1f))
+            addView(label(rupees(p.amountPaise), 14f, C.INK))
+            setOnClickListener {
+                pickCategory("Change category of " + rupees(p.amountPaise) + " part", p.category, includeExcluded = true) { c ->
+                    db.setPartCategory(p.id, c); render()
+                }
+            }
+        })
+        if (open) addView(View(this@MainActivity), lp(MATCH, dp(6)))
     }
 
     // ---------- dialogs ----------
@@ -219,13 +270,14 @@ class MainActivity : Activity() {
         box.addView(label("Tap a category to save", 12f, C.MUTED).apply { setPadding(0, dp(10), 0, dp(6)) })
         val flow = FlowLayout(this, dp(8), dp(8)); box.addView(flow)
         val dlg = AlertDialog.Builder(this).setView(ScrollView(this).apply { addView(box) }).setNegativeButton("Cancel", null).create()
-        for (cat in Categorizer.CHIPS) flow.addView(chip(catLabel(cat)) {
+        for (cat in CatStore.spending().map { it.name }) flow.addView(chip(catLabel(cat)) {
             val v = amount.text.toString().replace(",", "").toBigDecimalOrNull()
             if (v == null || v.signum() <= 0) { amount.error = "Enter amount"; return@chip }
             db.addManual(v.movePointRight(2).toLong(), cat, note.text.toString())
             dlg.dismiss(); render()
             Toast.makeText(this, "Added ${rupees(v.movePointRight(2).toLong())} · $cat", Toast.LENGTH_SHORT).show()
         })
+        flow.addView(editCategoriesChip { dlg.dismiss() })
         dlg.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
         dlg.show(); amount.requestFocus()
     }
@@ -235,6 +287,7 @@ class MainActivity : Activity() {
         box.addView(label(rupees(t.amountPaise) + " · " + t.title, 20f, C.INK, true))
         box.addView(label(SimpleDateFormat("EEE d MMM yyyy, h:mm a", Locale("en", "IN")).format(Date(t.ts)) +
             listOfNotNull(t.bank, t.account?.let { "••$it" }, t.ref?.let { "Ref $it" }).joinToString(" · ", prefix = "  "), 12f, C.MUTED))
+        val parts = db.splitsOf(t.id)
         val flow = FlowLayout(this, dp(8), dp(8)).apply { setPadding(0, dp(12), 0, dp(8)) }
         box.addView(flow)
         val note = EditText(this).apply { hint = "note"; setText(t.note ?: ""); setSingleLine(); setTextColor(C.INK); setHintTextColor(C.MUTED) }
@@ -242,13 +295,39 @@ class MainActivity : Activity() {
         if (t.raw != null) box.addView(label(t.raw, 11f, C.MUTED).apply { setPadding(0, dp(10), 0, 0) })
         val dlg = AlertDialog.Builder(this).setView(ScrollView(this).apply { addView(box) })
             .setPositiveButton("Save") { _, _ -> db.setNote(t.id, note.text.toString()); render() }
-            .setNeutralButton("Delete") { _, _ -> db.delete(t.id); render() }
+            .setNeutralButton("Delete") { _, _ -> confirmDelete(t) }
             .setNegativeButton(if (t.reversed) "Not reversed" else "Mark refunded") { _, _ -> db.setReversed(t.id, !t.reversed); render() }
             .create()
-        for (cat in Categorizer.ALL) flow.addView(chip(catLabel(cat), cat == t.category) {
-            db.setCategory(t, cat); db.setNote(t.id, note.text.toString()); dlg.dismiss(); render()
-        })
+        fun openSplit() { db.setNote(t.id, note.text.toString()); dlg.dismiss(); startActivity(Intent(this, SplitActivity::class.java).putExtra(SplitActivity.EXTRA_TXN, t.id)) }
+        if (parts.isEmpty()) {
+            for (c in CatStore.all()) flow.addView(chip(c.label, c.name == t.category) {
+                db.setCategory(t, c.name); db.setNote(t.id, note.text.toString()); dlg.dismiss(); render()
+            })
+            flow.addView(editCategoriesChip { dlg.dismiss() })
+            box.addView(button("✂  Split into categories", primary = false) { openSplit() }, lp().apply { topMargin = dp(12) })
+        } else {
+            flow.addView(label("Split into ${parts.size} · tap a part to change its category", 12f, C.MUTED, true), lp(MATCH, WRAP))
+            for (p in parts) flow.addView(chip(catLabel(p.category) + "  " + rupees(p.amountPaise) + (p.note?.let { " · $it" } ?: "")) {
+                dlg.dismiss()
+                pickCategory("Change category of " + rupees(p.amountPaise) + " part", p.category, includeExcluded = true) { c -> db.setPartCategory(p.id, c); render() }
+            }.apply { background = rounded(C.cat(p.category) and 0x33FFFFFF, dp(20).toFloat()) })
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(12), 0, 0) }
+            row.addView(button("✂  Edit split", primary = false) { openSplit() }, lp(0, WRAP, 1f).apply { rightMargin = dp(8) })
+            row.addView(button("Undo split", primary = false) {
+                dlg.dismiss()
+                AlertDialog.Builder(this).setTitle("Undo split?")
+                    .setMessage("It goes back to one " + rupees(t.amountPaise) + " spend in " + catLabel(t.category) + ".")
+                    .setPositiveButton("Undo split") { _, _ -> db.unsplit(t.id); render() }.setNegativeButton("Keep", null).show()
+            }, lp(0, WRAP, 1f))
+            box.addView(row)
+        }
         dlg.show()
+    }
+
+    private fun confirmDelete(t: Txn) {
+        AlertDialog.Builder(this).setTitle("Delete this payment?")
+            .setMessage(rupees(t.amountPaise) + " · " + t.title + if (db.splitsOf(t.id).isNotEmpty()) "\nIts split parts go too." else "")
+            .setPositiveButton("Delete") { _, _ -> db.delete(t.id); render() }.setNegativeButton("Cancel", null).show()
     }
 
     private fun showSettings() {
@@ -270,10 +349,12 @@ class MainActivity : Activity() {
         row.addView(chip("Test now") { Reminder.notifyNow(this) })
         box.addView(row)
         box.addView(chip("Re-scan SMS (last 60 days)") { if (hasSms()) runImport() else askSms() }, lp(WRAP, WRAP).apply { topMargin = dp(14) })
+        var settingsDlg: AlertDialog? = null
+        box.addView(chip("Edit categories") { settingsDlg?.dismiss(); startActivity(Intent(this, CategoriesActivity::class.java)) }, lp(WRAP, WRAP).apply { topMargin = dp(8) })
         box.addView(chip("Export CSV") { exportCsv() }, lp(WRAP, WRAP).apply { topMargin = dp(8) })
         box.addView(label("ATM withdrawals are logged as \"ATM cash\" and not counted, so cash you add by hand isn't counted twice.\n\n" +
             "Privacy: everything stays on this phone. Kharcha has no internet permission.", 12f, C.MUTED).apply { setPadding(0, dp(14), 0, 0) })
-        AlertDialog.Builder(this).setView(ScrollView(this).apply { addView(box) }).setPositiveButton("Close", null).show()
+        settingsDlg = AlertDialog.Builder(this).setView(ScrollView(this).apply { addView(box) }).setPositiveButton("Close", null).show()
     }
 
     // ---------- CSV ----------
@@ -289,9 +370,20 @@ class MainActivity : Activity() {
         if (requestCode != 42 || resultCode != RESULT_OK) return
         fun q(s: String?) = "\"" + (s ?: "").replace("\"", "\"\"").replace("\n", " ") + "\""
         val f = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
+        // Split payments: the payment row says "split", then one "split part" row per part (amounts add up to the payment).
         val sb = StringBuilder("date,amount,payee,category,note,bank,account,ref,source,reversed,sms\n")
-        for (t in db.all()) sb.append(listOf(q(f.format(Date(t.ts))), String.format(Locale.US, "%.2f", t.amountPaise / 100.0), q(t.payee), q(t.category),
-            q(t.note), q(t.bank), q(t.account), q(t.ref), t.source, if (t.reversed) "yes" else "no", q(t.raw)).joinToString(",")).append('\n')
+        val all = db.all()
+        val splits = db.splitsFor(all.map { it.id })
+        fun amt(p: Long) = String.format(Locale.US, "%.2f", p / 100.0)
+        for (t in all) {
+            val parts = splits[t.id]
+            sb.append(listOf(q(f.format(Date(t.ts))), amt(t.amountPaise), q(t.payee), q(if (parts.isNullOrEmpty()) t.category else "split (${parts.size} parts)"),
+                q(t.note), q(t.bank), q(t.account), q(t.ref), t.source, if (t.reversed) "yes" else "no", q(t.raw)).joinToString(",")).append('\n')
+            parts?.forEach { p ->
+                sb.append(listOf(q(f.format(Date(t.ts))), amt(p.amountPaise), q(t.payee), q(p.category), q(p.note), q(t.bank), q(t.account), q(t.ref),
+                    "split part", if (t.reversed) "yes" else "no", q(null)).joinToString(",")).append('\n')
+            }
+        }
         try {
             contentResolver.openOutputStream(uri)?.use { it.write(sb.toString().toByteArray()) }
             Toast.makeText(this, "Exported ${db.count()} rows", Toast.LENGTH_SHORT).show()

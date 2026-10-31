@@ -20,8 +20,8 @@ android {
         applicationId = "app.kharcha"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1.0"
     }
 
     signingConfigs {
@@ -58,4 +58,6 @@ android {
 
 dependencies {
     testImplementation("junit:junit:4.13.2")
+    // Real SQLite on the JVM, for the database migration tests only (not shipped in the app).
+    testImplementation("org.xerial:sqlite-jdbc:3.46.1.3")
 }
